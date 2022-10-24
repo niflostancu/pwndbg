@@ -8,6 +8,8 @@ system has /proc/$$/maps, which backs 'info proc mapping'.
 from __future__ import annotations
 
 import bisect
+import os
+import re
 from typing import Any
 
 import gdb
@@ -119,6 +121,8 @@ def get() -> tuple[pwndbg.lib.memory.Page, ...]:
             pages.extend(kernel_vmmap_via_page_tables())
         elif kernel_vmmap == "monitor":
             pages.extend(kernel_vmmap_via_monitor_info_mem())
+    if pwndbg.gdblib.remote.is_remote() and os.environ.get("GDB_MCU_TARGET"):
+        pages.extend(vmmap_via_gdb_info_mem())
 
     # TODO/FIXME: Add tests for  QEMU-user targets when this is needed
     if not pages:
@@ -132,6 +136,8 @@ def get() -> tuple[pwndbg.lib.memory.Page, ...]:
         if pages:
             pages.extend(info_sharedlibrary())
         else:
+            if pwndbg.gdblib.remote.is_remote() and os.environ.get("GDB_MCU_TARGET"):
+                return (pwndbg.lib.memory.Page(0, pwndbg.gdblib.arch.ptrmask, 7, 0, "[unknown]"),)
             if pwndbg.gdblib.qemu.is_qemu():
                 return (pwndbg.lib.memory.Page(0, pwndbg.gdblib.arch.ptrmask, 7, 0, "[qemu]"),)
             pages.extend(info_files())
@@ -541,6 +547,66 @@ def kernel_vmmap_via_monitor_info_mem():
         flags |= 1
 
         pages.append(pwndbg.lib.memory.Page(start, size, flags, 0, "<qemu>"))
+
+    return tuple(pages)
+
+
+@pwndbg.lib.cache.cache_until("stop")
+def vmmap_via_gdb_info_mem():
+    """
+    Returns bare metal memory maps information by parsing `info mem` output.
+
+    # Example output from the command:
+    # pwndbg> monitor info mem
+    # Using memory regions provided by the target.
+    # Num Enb Low Addr   High Addr  Attrs
+    # 0   y   0x00000000 0x00058000 flash blocksize 0x2000 nocache
+    # 1   y   0x00058000 0x100000000 rw nocache
+    """
+    global monitor_info_mem_not_warned
+    info_mem_output = None
+    try:
+        info_mem_output = gdb.execute("info mem", to_string=True)
+    finally:
+        # Older versions of QEMU/GDB may throw `gdb.error: "monitor" command
+        # not supported by this target`. Newer versions will not throw, but will
+        # return a string starting with 'unknown command:'. We handle both of
+        # these cases in a `finally` block instead of an `except` block.
+        if info_mem_output is None or "unknown command" in info_mem_output:
+            print(M.error(
+                f"The {pwndbg.gdblib.arch.name} architecture does"
+                + " not support the `monitor info mem` command. Run "
+                + "`help show kernel-vmmap` for other options."
+            ))
+            return tuple()
+
+    lines = info_mem_output.splitlines()
+
+    pages = []
+    found_header = False
+    for line in lines:
+        cols = re.split(r'\s{1,}', line)
+        if cols[0] == "Num" and cols[1] == "Enb":
+            found_header = True
+            continue
+        if not found_header:
+            continue
+        if cols[1] != 'y':
+            continue
+
+        start = int(cols[2], 16)
+        end = int(cols[3], 16)
+        size = end - start
+        perm = cols[4:]
+
+        # assume everything is executable
+        flags = 1
+        if "flash" in perm:
+            flags |= 4  # flash is read only
+        if "rw" in perm:
+            flags |= (4 | 2)
+
+        pages.append(pwndbg.lib.memory.Page(start, size, flags, 0, "<target>"))
 
     return tuple(pages)
 

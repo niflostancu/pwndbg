@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gdb
 import pwnlib
+import os
 
 import pwndbg.gdblib.proc
 from pwndbg.gdblib import typeinfo
@@ -52,7 +53,9 @@ def _get_arch(ptrsize: int):
     else:
         endian = "big"
 
-    if pwndbg.gdblib.proc.alive:
+    if os.environ.get("GDB_MCU_ARCH"):
+        arch = os.environ.get("GDB_MCU_ARCH")
+    elif pwndbg.gdblib.proc.alive:
         arch = gdb.newest_frame().architecture().name()
     else:
         arch = gdb.execute("show architecture", to_string=True).strip()

@@ -21,7 +21,10 @@ from pwndbg.lib.regs import reg_sets
 
 @pwndbg.gdblib.proc.OnlyWhenRunning
 def gdb_get_register(name: str):
-    return gdb.selected_frame().read_register(name)
+    try:
+        return gdb.selected_frame().read_register(name)
+    except (ValueError, gdb.error):
+        return None
 
 
 # We need to manually make some ptrace calls to get fs/gs bases on Intel
